@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import os
@@ -7,7 +8,7 @@ import zipfile
 from collections import defaultdict, OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional, List
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,136 @@ from etl.zip_inspector import scan_and_load, parse_zip_metadata, collect_archive
     summarise_entry_generic, DB_LABELS, _fetch_backup_metadata, summarise_entry, CANDIDATE_ANTI_REASONS_NAME, \
     CANDIDATE_REASONS_NAME, DB_DISPLAY_NAMES, BASE_COLUMNS, SCATTER_PLOTS, ADDITIONAL_SCATTER_PREFIX_PAIRS, BAR_PLOTS, \
     STACKED_BAR_CONFIG, HISTOGRAMS
+from etl.constants import DB_NAMES
+
+
+def _decode_backup_entry(entry: dict) -> tuple:
+    """Decode a single entry from a redis_backup_db*.json file.
+
+    Returns (key_text, value_parsed) where value_parsed is a Python object
+    (dict/list/str) if the value is valid JSON, otherwise the raw string.
+    """
+    try:
+        key_bytes = decode_key(entry)
+        key_text = key_bytes.decode('utf-8', errors='replace')
+    except Exception as exc:
+        key_text = f'<key decode error: {exc}>'
+
+    preview, details = try_decode_value(entry)
+    value_bytes = details.get('decoded_bytes') if isinstance(details, dict) else None
+
+    if not isinstance(value_bytes, (bytes, bytearray)):
+        v = entry.get('value') or {}
+        if isinstance(v, dict) and isinstance(v.get('data'), str):
+            try:
+                value_bytes = base64.b64decode(v['data'], validate=False)
+            except Exception:
+                value_bytes = None
+
+    if isinstance(value_bytes, (bytes, bytearray)):
+        plain_value = value_bytes.decode('utf-8', errors='replace')
+    else:
+        plain_value = str(preview)
+
+    try:
+        parsed = json.loads(plain_value)
+    except Exception:
+        parsed = plain_value
+
+    return key_text, parsed
+
+
+def etl_from_dir(checkpoint_dir: Path, dataset_name: str = None, verbose: bool = True) -> dict:
+    """Load MCR results from a checkpoint directory into a structured db dict.
+
+    The directory layout expected is::
+
+        checkpoint_dir/
+            manifest.json
+            redis_backup_db0.json    # DATA
+            redis_backup_db1.json    # CAN
+            ...
+            redis_backup_db10.json   # LOGS
+            redis_dump_readable.json (optional, ignored)
+
+    Parameters
+    ----------
+    checkpoint_dir : Path
+        Path to a checkpoint directory (e.g. results/checkpoints/sonar/workers_3/class_1_sample_all/)
+    dataset_name : str, optional
+        Human-readable name for the dataset. Auto-detected from the directory path if omitted.
+    verbose : bool
+        Print progress messages.
+
+    Returns
+    -------
+    dict
+        Database dictionary keyed by DB_NAMES values (same schema as DRIFTS etl()).
+        Special keys: '_dataset_name', '_checkpoint_dir'.
+    """
+    checkpoint_dir = Path(checkpoint_dir)
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+
+    if dataset_name is None:
+        parts = checkpoint_dir.parts
+        # Try to infer from path: …/checkpoints/<dataset>/workers_N/…
+        for i, part in enumerate(parts):
+            if part == 'checkpoints' and i + 1 < len(parts):
+                dataset_name = parts[i + 1]
+                break
+        if dataset_name is None:
+            dataset_name = checkpoint_dir.name
+
+    if verbose:
+        print(f"Loading checkpoint: {checkpoint_dir}")
+        print(f"Dataset: {dataset_name}")
+
+    db: dict = {}
+
+    for db_index in range(11):
+        backup_path = checkpoint_dir / f"redis_backup_db{db_index}.json"
+        if not backup_path.exists():
+            continue
+
+        with open(backup_path, encoding='utf-8') as fh:
+            raw = json.load(fh)
+
+        entries = raw.get('entries') or []
+        entries_map = {}
+        for entry in entries:
+            key_text, parsed = _decode_backup_entry(entry)
+            entries_map[key_text] = parsed
+
+        db_name = DB_NAMES.get(db_index, f"db_{db_index}")
+        db[db_name] = entries_map
+
+        if verbose:
+            print(f"  DB{db_index:02d} ({db_name}): {len(entries_map)} keys")
+
+    db['_dataset_name'] = dataset_name
+    db['_checkpoint_dir'] = str(checkpoint_dir)
+
+    if verbose:
+        print(f"Loaded {len([k for k in db if not k.startswith('_')])} databases.")
+
+    return db
+
+
+def list_checkpoints(results_dir: Path) -> List[Path]:
+    """Return all checkpoint directories found under results_dir.
+
+    Checkpoint directories are identified by the presence of manifest.json
+    or at least one redis_backup_db*.json file.
+    """
+    results_dir = Path(results_dir)
+    checkpoints = []
+    for path in sorted(results_dir.rglob('manifest.json')):
+        checkpoints.append(path.parent)
+    if not checkpoints:
+        for path in sorted(results_dir.rglob('redis_backup_db0.json')):
+            checkpoints.append(path.parent)
+    return checkpoints
 
 
 def etl(zip_paths, results_dir):

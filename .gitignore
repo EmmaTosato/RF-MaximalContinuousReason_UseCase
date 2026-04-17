@@ -17,3 +17,5 @@ baseline/_MACOSX/
 
 baseline/Classifiers-converted/
 baseline/datasets/
+
+.claude/
