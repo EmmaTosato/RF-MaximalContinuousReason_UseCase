@@ -29,6 +29,7 @@ import redis
 import json
 import datetime
 from pathlib import Path
+import pickle
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -37,9 +38,11 @@ from sklearn.impute import SimpleImputer
 # Shared modules
 from redis_helpers.connection import connect_redis
 from redis_helpers.utils import clean_all_databases
+
 from init_utils import (
     store_training_set,
     store_forest_and_endpoints,
+    process_all_classified_samples,
     initialize_seed_candidate
 )
 from helpers import convert_numpy_types, parse_sample_indices
@@ -54,81 +57,8 @@ from redis_helpers.samples import store_sample
 # Constants
 CLASSIFIERS_ROOT = os.path.join('baseline', 'Classifiers-100-converted')
 DATASETS_ROOT = os.path.join('baseline', 'resources', 'datasets')
-DATASETS = ['ann-thyroid', 'appendicitis', 'banknote', 'biodegradation', 'ecoli', 'glass2', 'heart-c', 'ionosphere', 'iris', 'karhunen', 'letter', 'magic', 'mofn-3-7-10', 'new-thyroid', 'pendigits', 'phoneme', 'ring', 'segmentation', 'shuttle', 'sonar', 'spambase', 'spectf', 'texture', 'threeOf9', 'twonorm', 'vowel', 'waveform-21', 'waveform-40', 'wdbc', 'wine-recog', 'wpbc', 'xd6']
+DATASETS = ['spraydryer','ann-thyroid', 'appendicitis', 'banknote', 'biodegradation', 'ecoli', 'glass2', 'heart-c', 'ionosphere', 'iris', 'karhunen', 'letter', 'magic', 'mofn-3-7-10', 'new-thyroid', 'pendigits', 'phoneme', 'ring', 'segmentation', 'shuttle', 'sonar', 'spambase', 'spectf', 'texture', 'threeOf9', 'twonorm', 'vowel', 'waveform-21', 'waveform-40', 'wdbc', 'wine-recog', 'wpbc', 'xd6']
 
-
-def list_available_datasets():
-    """List all datasets with pre-trained classifiers in baseline directory."""
-    print("\nAvailable Baseline Datasets:")
-    print("=" * 70)
-
-    if not os.path.exists(CLASSIFIERS_ROOT):
-        print(f"[ERROR] Classifiers directory not found: {CLASSIFIERS_ROOT}")
-        return
-
-    datasets = []
-    for name in sorted(os.listdir(CLASSIFIERS_ROOT)):
-        dataset_dir = os.path.join(CLASSIFIERS_ROOT, name)
-        if not os.path.isdir(dataset_dir):
-            continue
-
-        # Check if dataset files exist
-        csv_path = os.path.join(DATASETS_ROOT, name, f"{name}.csv")
-        samples_path = os.path.join(DATASETS_ROOT, name, f"{name}.samples")
-
-        # Count JSON classifiers
-        json_files = [f for f in os.listdir(dataset_dir) if f.endswith('.json')]
-
-        status = "✓"
-        notes = []
-        if not os.path.exists(csv_path):
-            status = "✗"
-            notes.append("CSV missing")
-        if not os.path.exists(samples_path):
-            status = "✗"
-            notes.append("samples missing")
-        if len(json_files) == 0:
-            status = "✗"
-            notes.append("no classifiers")
-
-        note_str = f" ({', '.join(notes)})" if notes else ""
-        print(f"  {status} {name:<30} {len(json_files)} classifier(s){note_str}")
-
-        if status == "✓":
-            datasets.append(name)
-
-    print(f"\nTotal: {len(datasets)} datasets ready to use")
-    print("\nUsage: python init_baseline.py <dataset_name> --class-label <label>")
-
-
-def find_classifier_json(dataset_name):
-    """
-    Find all classifier JSON files for a dataset.
-
-    Returns:
-        List of paths to JSON classifier files
-    """
-    classifier_dir = os.path.join(CLASSIFIERS_ROOT, dataset_name)
-
-    # Try finding directory with hyphens if original not found
-    if not os.path.exists(classifier_dir) and '_' in dataset_name:
-        alt_name = dataset_name.replace('_', '-')
-        alt_dir = os.path.join(CLASSIFIERS_ROOT, alt_name)
-        if os.path.exists(alt_dir):
-            classifier_dir = alt_dir
-            # We don't change dataset_name here as it might be used for filtering inside
-
-
-    if not os.path.exists(classifier_dir):
-        return []
-
-    json_files = [
-        os.path.join(classifier_dir, fname)
-        for fname in os.listdir(classifier_dir)
-        if fname.endswith('.json')
-    ]
-
-    return sorted(json_files)
 
 
 def load_dataset_from_baseline(dataset_name, separator=','):
@@ -202,98 +132,16 @@ def load_dataset_from_baseline(dataset_name, separator=','):
     return X_train, samples, y_train, None, data.features, np.unique(y_train), data
 
 
-def load_classifier_from_json(dataset_name):
-    """
-    Load a pre-trained classifier from JSON.
+def load_classifier_from_pkl(model_file):
 
-    Args:
-        dataset_name: Name of the dataset
-        classifier_index: Index of classifier to use if multiple exist (default: 0)
+    print(f"[INFO] Loading pre-trained classifier: {os.path.basename(model_file)}")
 
-    Returns:
-        (sklearn_rf, classifier_path) tuple
-    """
-    json_files = find_classifier_json(dataset_name)
-
-    if not json_files:
-        raise FileNotFoundError(
-            f"No classifier JSON files found for dataset '{dataset_name}' "
-            f"in {os.path.join(CLASSIFIERS_ROOT, dataset_name)}"
-        )
-
-    if len(json_files) > 1:
-        raise ValueError(
-            f"Classifier more than one RF found."
-        )
-
-    classifier_path = json_files[0]
-
-    print(f"[INFO] Loading pre-trained classifier: {os.path.basename(classifier_path)}")
-
-    # Parse parameters from filename
-    filename = os.path.basename(classifier_path)
-    try:
-        parts = filename.split('_nbestim_')[1]
-        n_estimators = int(parts.split('_maxdepth_')[0])
-        max_depth = int(parts.split('_maxdepth_')[1].split('.')[0])
-        print(f"[INFO] Classifier: {n_estimators} trees, max_depth={max_depth}")
-    except (IndexError, ValueError):
-        print(f"[WARNING] Could not parse classifier parameters from filename")
-
-    # Load the classifier using load_rf_from_json
-    sklearn_rf = load_rf_from_json(classifier_path)
+    with open(model_file, "rb") as f:
+        sklearn_rf = pickle.load(f)
 
     print(f"[INFO] Successfully loaded classifier with {sklearn_rf.n_estimators} trees")
 
-    return sklearn_rf, classifier_path
-
-
-def validation(connections, db_mapping, dataset_name):
-    X_train, X_test_samples, y_train, _, feature_names, all_classes, data = load_dataset_from_baseline(dataset_name)
-    sklearn_rf, classifier_path = load_classifier_from_json(dataset_name)
-
-    our_forest = sklearn_forest_to_forest(sklearn_rf, feature_names)
-    eu_data = store_forest_and_endpoints(connections, our_forest)
-
-    X_test = [dict(zip(feature_names,  x_test) ) for x_test in X_test_samples]
-    predictions = [our_forest.predict(x_test) for x_test in X_test ]
-    validated= True
-    not_validated = []
-    validated_test = []
-    for i in range(len(X_test)):
-        nodes = []
-        for tree in our_forest.trees:
-            nodes.append(tree.root)
-        caches = {
-            'R': set(),
-            'NR': set(),
-            'GP': set(),
-            'BP': set(),
-            'AR': set(),
-            'AP': set()
-        }
-        icf = our_forest.extract_icf(X_test[i])
-        if not rcheck_cache(
-                    connections=connections,
-                    icf=icf,
-                    label=predictions[i],
-                    nodes=saturate(icf, nodes),
-                    eu_data=eu_data,
-                    forest=our_forest,
-                    caches=caches,
-                    info={}
-                ):
-            not_validated.append(icf)
-            validated = False
-        else:
-            validated_test.append(X_test[i])
-
-    print(40*"#")
-    if not validated:
-        print(f"{dataset_name} {len(not_validated)} over {len(X_test)} samples not validated")
-    else:
-        print(f"{dataset_name} FULLY VALIDATED")
-    print(40*"#")
+    return sklearn_rf
 
 
 def process_all_classified_samples_baseline(
@@ -413,7 +261,7 @@ def process_all_classified_samples_baseline(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Initialize Redis with Baseline Pre-trained Classifier',
+        description='Initialize Redis with DSD Pre-trained Classifier',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -433,12 +281,9 @@ Examples:
   python init_baseline.py iris --class-label "0" --classifier-index 1
         """
     )
-    
-    # Dataset selection
     parser.add_argument('dataset_name', nargs='?', 
                        help='Name of the baseline dataset (e.g., iris, sonar)')
-    parser.add_argument('--list-datasets', action='store_true',
-                       help='List all available baseline datasets')
+    parser.add_argument('--model-file', type=str, required=True, help='model pickle file')
     
     # Core arguments
     parser.add_argument('--redis-port', type=int, default=6379,
@@ -456,17 +301,7 @@ Examples:
     
     args = parser.parse_args()
     
-    # List datasets mode
-    if args.list_datasets:
-        list_available_datasets()
-        return 0
-    
-    # Validate arguments
-    if not args.dataset_name:
-        print("[ERROR] Please specify a dataset name or use --list-datasets")
-        parser.print_help()
-        return 1
-    
+       
     if not args.class_label:
         print("[ERROR] --class-label is required")
         return 1
@@ -481,26 +316,7 @@ Examples:
         if not connections:
             return 1
         
-        '''
-        if not args.no_clean:
-            if args.preserve_ar:
-                # Clean all databases except DB5 (AR)
-                print("[INFO] Cleaning Redis databases (preserving DB5/AR)...")
-                for name, conn in connections.items():
-                    if name not in ['AR']:  # Skip AR database
-                        try:
-                            conn.flushdb()
-                        except Exception as e:
-                            print(f"[WARNING] Could not clean {name}: {e}")
-                print("[INFO] Redis databases cleaned (AR preserved)")
-            else:
-                # Clean all databases
-                clean_all_databases(connections, db_mapping)
-                print("[INFO] Redis databases cleaned")
-        '''
         clean_all_databases(connections, db_mapping)
-        #validation(connections, db_mapping, args.dataset_name)
-        #clean_all_databases(connections, db_mapping)
         
         # 2. Load Dataset
         X_train, X_test_samples, y_train, _, feature_names, all_classes, data = load_dataset_from_baseline(
@@ -514,7 +330,9 @@ Examples:
         print(f"[INFO] Classes: {all_classes}")
         
         # 3. Load Pre-trained Classifier
-        sklearn_rf, classifier_path = load_classifier_from_json(args.dataset_name)
+        #sklearn_rf e` un oggetto RandomForestClassifier di sklearn
+        #sklearn_rf, classifier_path = load_classifier_from_json(args.dataset_name)
+        sklearn_rf = load_classifier_from_pkl(args.model_file)
              
         our_forest = sklearn_forest_to_forest(sklearn_rf, feature_names)
         
@@ -530,11 +348,15 @@ Examples:
                 except (ValueError, TypeError):
                     pass
         
-        # 4. Store Training Set Metadata
-        store_training_set(connections, X_train, y_train, feature_names, args.dataset_name, dataset_type='baseline')
-
+        # Store training set in DATA database
+        training_set_stored = store_training_set(connections, X_train, y_train, feature_names, args.dataset_name, dataset_type='dsd')
+        print("\n[INFO] Training set stored: ", training_set_stored)
+        
+        
+        # 4. Store Training Set Metadata        
         print("\n[INFO] Storing forest and computing endpoints...")
         eu_data = store_forest_and_endpoints(connections, our_forest)
+        
 
         # 5. Process Test Samples
         print("\n[INFO] Processing test samples...")
@@ -578,7 +400,7 @@ Examples:
         # 10. Store classifier metadata
         metadata = {
             'dataset': args.dataset_name,
-            'classifier_path': classifier_path,
+            'classifier_path': args.model_file,
             'n_estimators': sklearn_rf.n_estimators,
             'max_depth': sklearn_rf.max_depth,
             'n_features': sklearn_rf.n_features_in_,
@@ -588,7 +410,7 @@ Examples:
         connections['DATA'].set('classifier_metadata', json.dumps(metadata))
         
         print(f"\n[SUCCESS] Successfully initialized {args.dataset_name}")
-        print(f"[SUCCESS] Pre-trained classifier loaded from: {os.path.basename(classifier_path)}")
+        print(f"[SUCCESS] Pre-trained classifier loaded from: {os.path.basename(args.model_file)}")
         print(f"[SUCCESS] Ready for worker processing with {len(stored_samples)} samples")
         
         return 0
