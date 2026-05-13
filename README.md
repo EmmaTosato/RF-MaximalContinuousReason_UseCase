@@ -16,7 +16,8 @@ This repo provides the info for the paper **Maximal Continuous Reason for Random
   - [UCI Dataset Initialisation](#uci-dataset-initialisation)
   - [OpenML Datasets](#openml-datasets)
   - [PMLB Datasets](#pmlb-datasets)
-  - [AXp inizialization](#axp-inizialization)
+  - [AXp Initialization](#axp-initialization-baseline-pre-trained-classifiers)
+  - [Custom Pre-trained Model (init_dsd.py)](#initialization-with-a-custom-pre-trained-model-init_dsdpy)
 - [Quick Start Tutorial](#quick-start-tutorial)
 - [Running the Experiments](#running-experiments)
   - [1. Worker Scaling Experiments](#1-worker-scaling-experiments)
@@ -150,7 +151,17 @@ chmod +x run.sh  # First time only
 ./run.sh
 ```
 
-This will build the Docker image and start a container with Redis on `localhost:6379` and run the code within jupyter on `localhost:8888`.
+This will build the Docker image and start a container with Redis on `localhost:6379` and Jupyter on `localhost:8888`.
+
+If those ports are unavailable (common on Windows after a reboot due to Hyper-V port reservation), pass different ports explicitly:
+
+```bash
+# Windows
+run.bat start --redis-port 7379 --jupyter-port 9888
+
+# Linux/macOS
+./run.sh start --redis-port 7379 --jupyter-port 9888
+```
 
 **Available Commands:**
 
@@ -162,6 +173,13 @@ This will build the Docker image and start a container with Redis on `localhost:
 | Logs    | `run.bat logs`                 | `./run.sh logs`                  | View container logs          |
 | Restart | `run.bat restart`              | `./run.sh restart`               | Restart container            |
 | Help    | `run.bat help`                 | `./run.sh help`                  | Show help                    |
+
+Both scripts accept optional port parameters before the command:
+
+| Option | Default | Description |
+|---|---|---|
+| `--redis-port PORT` | `6379` | Host port mapped to Redis inside the container |
+| `--jupyter-port PORT` | `8888` | Host port mapped to Jupyter inside the container |
 
 **Using the container:**
 
@@ -187,8 +205,14 @@ The following directories are automatically mounted and accessible from your hos
 
    ```bash
    python -m venv .venv
-   source .venv/bin/activate
+   source .venv/bin/activate      # Linux/macOS
+   .venv\Scripts\activate         # Windows
    ```
+
+   > **Windows note:** if `pip install` fails with a "Long Path" error, enable Windows Long Path support first:
+   > `reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f`
+   > then restart the terminal and retry.
+
 2. **Install the Python dependencies**
 
    ```bash
@@ -196,7 +220,6 @@ The following directories are automatically mounted and accessible from your hos
    pip install -r requirements.txt
    ```
 
-   The `requirements.txt` file includes all necessary dependencies.
 3. **Start Redis**
 
    ```bash
@@ -204,6 +227,8 @@ The following directories are automatically mounted and accessible from your hos
    ```
 
    More info at https://redis.io/learn/howtos/quick-start
+
+   > **Windows note:** Redis does not have an official Windows binary. Use Docker (Option 1), WSL2, or [Memurai](https://www.memurai.com/) as a drop-in replacement.
 
 ## Usage
 
@@ -281,7 +306,7 @@ python init_pmlb.py iris --class-label "0" --n-estimators 10
 python init_pmlb.py sonar --class-label "1" --test-sample-index "0-2, 5, 10-12"
 ```
 
-### Axp inizialization
+### AXp initialization (baseline pre-trained classifiers)
 
 Initialize the system with pre-trained Random Forest classifiers and corresponding datasets from the baseline directory. This is useful for reproducing experiments with specific classifier configurations.
 
@@ -317,73 +342,162 @@ python init_baseline.py ecoli --class-label "1"
 
 Run `python init_baseline.py --help` to view the auto-generated help message with the latest defaults.
 
+### Initialization with a custom pre-trained model (`init_dsd.py`)
+
+Use `init_dsd.py` when you have your own pre-trained scikit-learn `RandomForestClassifier` (saved as a pickle) and a dataset that does not come from UCI/OpenML/PMLB. This is the entry point for bring-your-own-model workflows.
+
+**Dataset layout** — the dataset must follow the baseline directory convention:
+
+```
+baseline/resources/datasets/<dataset_name>/
+    <dataset_name>.csv      # full dataset with a class column as the last column
+    <dataset_name>.samples  # test samples (features only, one row per sample)
+```
+
+**Initialize Redis:**
+
+```bash
+python init_dsd.py <dataset_name> \
+    --model-file path/to/model.pkl \
+    --class-label "0"
+```
+
+**Example — train a RF on Iris and run MCR on class 0:**
+
+```python
+from sklearn.datasets import load_iris
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+import numpy as np, pickle, os
+
+iris = load_iris()
+X_train, X_test, y_train, _ = train_test_split(
+    iris.data, iris.target, test_size=0.3, random_state=42, stratify=iris.target
+)
+
+rf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+rf.fit(X_train, y_train)
+
+with open("iris_rf.pkl", "wb") as f:
+    pickle.dump(rf, f)
+
+os.makedirs("baseline/resources/datasets/iris_custom", exist_ok=True)
+# CSV: all data with class label as last column
+all_X = np.vstack([X_train, X_test])
+all_y = np.concatenate([y_train, _])
+np.savetxt("baseline/resources/datasets/iris_custom/iris_custom.csv",
+           np.column_stack([all_X, all_y]), delimiter=",",
+           header=",".join(iris.feature_names) + ",class", comments="")
+# Samples: test features only
+np.savetxt("baseline/resources/datasets/iris_custom/iris_custom.samples",
+           X_test, delimiter=",")
+```
+
+Then inside the container:
+
+```bash
+python init_dsd.py iris_custom --model-file iris_rf.pkl --class-label "0"
+```
+
+#### Core arguments
+
+- `dataset_name` — Name of the dataset subdirectory under `baseline/resources/datasets/`
+- `--model-file` — Path to the scikit-learn RF pickle file *(required)*
+- `--class-label` — Class label to process *(required)*
+- `--redis-port` *(int, default: 6379)* — Port of the Redis instance
+
 ---
 
 ## Quick Start Tutorial
 
 > **Note:** If using Docker, run `run.bat shell` (Windows) or `./run.sh shell` (Linux/macOS) first to enter the container, then execute the commands below.
 
-### Step 1: Test with a Single Dataset (5 minutes)
+### Step 1: Initialize a dataset
+
+Pick the initialization script that matches your data source:
 
 ```bash
-# Initialize Iris dataset from UCI with Bayesian optimization
+# UCI repository (trains a new RF automatically)
 python init_uci.py Iris --class-label "Iris-setosa" --optimize
+
+# Your own pre-trained sklearn RF pickle + custom dataset
+python init_dsd.py my_dataset --model-file my_model.pkl --class-label "0"
+
+# Baseline pre-trained classifiers (AXp comparison)
+python init_baseline.py sonar --class-label "1"
 ```
 
 ### Step 2: Start the Worker Algorithm
 
 ```bash
-# Launch workers to process the initialized dataset (default: 4 workers via worker_cache_logged.py)
+# Launch workers (default: 4 workers, configured in worker_config.yaml)
 python launch_workers.py start
 ```
 
-Edit the file `worker_config.yaml` to customize worker settings, e.g., increase the number of workers.
-
-**Key parameters:**
-
-- `start` — Start workers using configuration
-- `--config FILE` — Use custom YAML configuration file
+Edit `worker_config.yaml` to customize the number of workers or their arguments.
 
 **Other useful commands:**
 
 ```bash
-# Check worker status
-python launch_workers.py status
-
-# View logs for a specific worker
-python launch_workers.py logs 1
-
-# Stop all workers
-python launch_workers.py stop
-
-# Clean restart (stop + clean + start fresh)
-python launch_workers.py clean-restart
-```
-
-**Expected output:**
-
-```
-Starting 1 worker processes...
-Worker 1 started (PID: 12345)
-Workers running. Press Ctrl+C to monitor or stop.
+python launch_workers.py status      # Check worker status
+python launch_workers.py logs 1      # View logs for worker 1
+python launch_workers.py stop        # Stop all workers
+python launch_workers.py clean-restart  # Stop + clean + start fresh
 ```
 
 **Monitor progress:**
 
 ```bash
-# Check Redis databases for candidate reasons and confirmed reasons
-redis-cli -n 1 DBSIZE  # CAN database (candidates)
-redis-cli -n 2 DBSIZE  # R database (confirmed reasons)
-
-# Or use the status command
-python launch_workers.py status
+redis-cli -n 1 DBSIZE  # CAN — candidates still in queue
+redis-cli -n 2 DBSIZE  # R   — confirmed reasons found
+redis-cli -n 5 DBSIZE  # AR  — confirmed anti-reasons found
 ```
 
-### Step 3: Analyze Results in Jupyter Notebook
+Workers are done when `CAN` reaches 0 and both `R` and `AR` are stable.
+
+### Step 3: Dump Redis to disk
+
+Once workers finish, save the Redis state to a checkpoint directory so it can be re-analyzed without re-running workers:
+
+```python
+# Run inside the container (python3 -c "..." or as a script)
+from redis_backup import create_multi_database_backup, save_multi_database_backup_to_directory
+from experiments_utils import save_readable_dump
+from pathlib import Path
+
+redis_config = {"host": "localhost", "port": 6379}
+out_dir = Path("results/checkpoints/my_dataset/workers_4/class_0_sample_all")
+out_dir.mkdir(parents=True, exist_ok=True)
+
+backups = create_multi_database_backup(redis_config, databases=list(range(11)))
+save_multi_database_backup_to_directory(backups, out_dir, file_prefix="redis_backup")
+save_readable_dump(backups, out_dir, redis_config=redis_config)
+print("Dump saved to", out_dir)
+```
+
+The checkpoint directory will contain `redis_backup_db*.json` files (one per Redis database) and a human-readable `redis_dump_readable.json`.
+
+### Step 4: Analyze results
+
+Open the analysis notebooks in Jupyter (`http://localhost:8888` when using Docker):
+
+| Notebook | What it shows |
+|---|---|
+| `reasons_analysis.ipynb` | ICF reasons, anti-reasons, cost distribution, robustness per sample |
+| `workers_analysis.ipynb` | Worker iteration stats, queue timeseries, coverage growth |
+
+Both notebooks auto-detect checkpoints under `results/checkpoints/` — just open and run all cells.
+
+To execute them headlessly from the command line (inside the container):
 
 ```bash
-# Open the analysis notebook
-jupyter notebook models_analysis.ipynb
+jupyter nbconvert --to notebook --execute reasons_analysis.ipynb \
+    --output reasons_analysis.ipynb \
+    --ExecutePreprocessor.timeout=300
+
+jupyter nbconvert --to notebook --execute workers_analysis.ipynb \
+    --output workers_analysis.ipynb \
+    --ExecutePreprocessor.timeout=300
 ```
 
 ## Running Experiments
@@ -521,13 +635,34 @@ tail -f results/res/<dataset>/workers_<N>/class_<label>/experiment_log.txt
 
 ## Analysis and Visualization
 
-After running experiments, use the analysis notebooks to generate insights:
+After running experiments, use the analysis notebooks to generate insights.
+
+### `reasons_analysis.ipynb`
+
+Primary per-run analysis notebook. Loads a Redis checkpoint from disk (no live Redis needed) and produces:
+
+- List of discovered reasons and anti-reasons per sample
+- ICF interval plots for each reason
+- Cost distribution across samples (split-Gaussian cost function)
+- Robustness score per sample: `r(x) = 1 − max{ICF ∈ AR} cost_x(ICF) / |features|`
+- Robustness distribution histogram and scatter plots
+
+Auto-detects the latest checkpoint under `results/checkpoints/`. To point it at a specific run, edit the `CHECKPOINT_DIR` variable in the first cell.
+
+### `workers_analysis.ipynb`
+
+Worker performance analysis notebook. Reads the LOGS database (DB10) from the checkpoint and shows:
+
+- Per-worker iteration count and runtime
+- Queue size over time (CAN, R, AR)
+- Coverage growth curves
+- Early-stopping breakdown (reason reuse, GP hits, NR hits, BP hits)
 
 ### `models_analysis.ipynb`
 
-Primary analysis notebook with:
+Aggregate performance notebook across multiple datasets and worker counts:
 
-- Overall MCR performance metrics
+- Overall MCR coverage metrics
 - Worker scaling efficiency charts
 - Reason quality and coverage analysis
 - Summary tables and statistics
@@ -539,8 +674,6 @@ Comparison between MCR and [AXp](https://arxiv.org/abs/2105.10278) explanation:
 - Coverage analysis
 - Sample-by-sample coverage growth
 - Convergence behavior per dataset
-- Worker efficiency trends
-- Reason reuse statistics
 
 ### `ablation.ipynb`
 
@@ -549,14 +682,34 @@ Ablation study visualization:
 - Feature importance heatmaps
 - Performance delta per feature
 - Timeout rate analysis by configuration
-- Deactivated feature impact charts
+
+### `view_reason_analysis.py` — non-interactive alternative
+
+Generates a standalone HTML report equivalent to `reasons_analysis.ipynb` without needing Jupyter:
+
+```bash
+# Auto-detect latest checkpoint
+python view_reason_analysis.py
+
+# Point at a specific checkpoint directory
+python view_reason_analysis.py --checkpoint results/checkpoints/iris/workers_4/class_0_sample_all
+
+# Save report to a custom location
+python view_reason_analysis.py --output-dir results/reports/iris
+```
+
+Output: `reason_report.html` + `reason_costs.csv` + `sample_robustness.csv` + `anti_reasons_robustness.csv`.
 
 **Quick analysis workflow:**
 
 ```bash
-# Start Jupyter (inside Docker container or locally)
-jupyter notebook
+# Inside the Docker container — run notebooks headlessly
+jupyter nbconvert --to notebook --execute reasons_analysis.ipynb \
+    --output reasons_analysis.ipynb --ExecutePreprocessor.timeout=300
 
-# Open desired notebook and run all cells
-# Results auto-load from results/ directory
+jupyter nbconvert --to notebook --execute workers_analysis.ipynb \
+    --output workers_analysis.ipynb --ExecutePreprocessor.timeout=300
+
+# Or open Jupyter in the browser (Docker)
+# http://localhost:8888
 ```

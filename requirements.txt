@@ -13,13 +13,14 @@ ucimlrepo>=0.0.3
 # Jupyter
 jupyter>=1.0.0
 jupyterlab>=3.0.0
+nbconvert>=6.0.0
+ipykernel>=6.0.0
 
 # Database and caching
 redis>=4.0.0
 
 # Development and utility
 argparse  # Built-in but included for completeness
-jupyter>=1.0.0
 notebook>=6.4.0
 
 PyYAML
@@ -36,3 +37,4 @@ python-sat
 six
 python-resources
 anytree
+seaborn

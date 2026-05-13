@@ -63,6 +63,13 @@ def cal_sigmas(X_train, X_test, feature_names, test_ids=None):
 			n = n_above + n_below
 
 			if n == 0:
+				print(f"[WARNING] cal_sigmas: feature '{feature}' has no training samples, using MIN_SIGMA fallback")
+				sigmas_all[sample_id][feature] = {
+					"sigma_plus": MIN_SIGMA,
+					"sigma_minus": MIN_SIGMA,
+					"ratio_above_mean": 0.5,
+					"ratio_below_mean": 0.5,
+				}
 				continue
 
 			sum_pos = np.sum(delta_pos ** 2)

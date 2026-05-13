@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Iterable
 import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
+try:
+    from IPython.core.display_functions import display
+except ImportError:
+    display = print
 from matplotlib import pyplot as plt, dates as mdates
 
 from etl.constants import DB_NAMES
@@ -569,7 +572,7 @@ def _collect_heatmap_rows(entries):
 
 def _collect_worker_iteration_rows(report, df: pd.DataFrame):
     worker_stats = report.get('worker_stats') or {}
-    workers = (report or {}).get('../workers') or {}
+    workers = (report or {}).get('workers') or {}
     union_worker_ids = set(workers.keys()) | set(worker_stats.keys())
     label_map = _build_worker_label_map(union_worker_ids)
     rows = []
@@ -744,7 +747,7 @@ def render_worker_report(db):
 
 
 def _plot_queue_time_series(report, df: pd.DataFrame):
-    workers_data = (report or {}).get('../workers') or {}
+    workers_data = (report or {}).get('workers') or {}
     worker_stats = report.get("worker_stats")
     if not workers_data and not worker_stats:
         raise ValueError("Queue time series skipped: worker events unavailable.")

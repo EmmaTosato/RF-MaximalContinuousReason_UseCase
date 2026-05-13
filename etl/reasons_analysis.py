@@ -55,12 +55,17 @@ def extract_test_samples(db: Dict[str, Any]) -> Tuple[Dict, List, List, List]:
             # Support both flat and value_json-wrapped structures
             meta = v.get("value_json", v) if isinstance(v, dict) else v
 
+            sample_dict = meta.get("sample_dict")
+            if sample_dict is None:
+                print(f"[WARNING] sample_dict missing for {sample_id}, skipping")
+                continue
+
             tests_sample[sample_id] = {
                 **meta,
-                "features": meta["sample_dict"]
+                "features": sample_dict
             }
 
-            X_test.append(meta["sample_dict"])
+            X_test.append(sample_dict)
             test_ids.append(sample_id)
 
     return tests_sample, X_test, test_ids, feature_names
@@ -95,11 +100,11 @@ def calculate_costs_for_reasons(db: Dict, tests_sample: Dict, sigmas_all: Dict) 
     reason_types = ["reasons", "non_reasons", "anti_reasons"]
 
     for r in reason_types:
-        robustness[r] = {}
+        robustness[r] = {"cost": None, "icf": None, "bitmap": None}
         for bitmap_string in db[r].keys():
             icf = bitmap_to_icf(bitmap_string, eu)
 
-            max_cost = None
+            bitmap_max_cost = None
             for sample_id, sample_data in tests_sample.items():
                 sample_data.setdefault(r, {})
                 sample_entry = sample_data[r].setdefault(bitmap_string, {})
@@ -119,12 +124,14 @@ def calculate_costs_for_reasons(db: Dict, tests_sample: Dict, sigmas_all: Dict) 
                     "cost": cost,
                 })
 
-                if max_cost is None or max_cost < cost:
-                    max_cost = cost
-                    robustness[r]["cost"] = cost
-                    robustness[r]["sample"] = sample_data["features"]
-                    robustness[r]["icf"] = icf
-                    robustness[r]["bitmap"] = bitmap_string
+                if bitmap_max_cost is None or cost > bitmap_max_cost:
+                    bitmap_max_cost = cost
+
+            # Update robustness summary only if this bitmap has the highest cost seen so far for this reason type
+            if bitmap_max_cost is not None and (robustness[r]["cost"] is None or bitmap_max_cost > robustness[r]["cost"]):
+                robustness[r]["cost"] = bitmap_max_cost
+                robustness[r]["icf"] = icf
+                robustness[r]["bitmap"] = bitmap_string
 
     return robustness, cost_records
 
@@ -1193,7 +1200,7 @@ def visualize_anti_reason_corridor(sample_id: str, tests_sample: Dict, feature_n
         f'Cost: {ar_cost:.2f}',
         f'ICF Features: {total_constrained}/{len(feature_names)}',
         f'Sample in ICF Rate: {satisfaction_rate:.1f}% ({within_count}/{total_constrained})',
-        f'Sample Out of ICF: {violation_count/total_constrained*100:.1f}% ({violation_count}/{total_constrained})'
+        f'Sample Out of ICF: {violation_count/total_constrained*100 if total_constrained > 0 else 0.0:.1f}% ({violation_count}/{total_constrained})'
     ]
     # if prediction_status:
     #     subtitle_parts.append(f'<br><sub>{prediction_status}</sub>')

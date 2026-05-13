@@ -6,29 +6,50 @@ REM ==========================================
 set IMAGE_NAME=mcr:latest
 set CONTAINER_NAME=mcr-container
 
+REM Defaults
+set REDIS_PORT=6379
+set JUPYTER_PORT=8888
+
+REM Parse named parameters (--redis-port N  --jupyter-port N) before the command
+:parse_args
+if "%1"=="--redis-port"   ( set REDIS_PORT=%2   & shift & shift & goto parse_args )
+if "%1"=="--jupyter-port" ( set JUPYTER_PORT=%2 & shift & shift & goto parse_args )
+
+REM Now %1 is the command (or empty)
 if "%1"=="" goto start
-if /I "%1"=="start" goto start
-if /I "%1"=="stop" goto stop
-if /I "%1"=="restart" goto restart
-if /I "%1"=="shell" goto shell
-if /I "%1"=="logs" goto logs
-if /I "%1"=="rebuild" goto rebuild
+if /I "%1"=="start"         goto start
+if /I "%1"=="stop"          goto stop
+if /I "%1"=="restart"       goto restart
+if /I "%1"=="shell"         goto shell
+if /I "%1"=="logs"          goto logs
+if /I "%1"=="rebuild"       goto rebuild
 if /I "%1"=="clean-rebuild" goto clean_rebuild
-if /I "%1"=="help" goto help
+if /I "%1"=="help"          goto help
+echo Unknown command: %1
+echo Run "run.bat help" for usage.
+exit /b 1
 
 :help
 echo.
-echo Usage: run.bat [command]
+echo Usage: run.bat [--redis-port PORT] [--jupyter-port PORT] [command]
 echo.
 echo Commands:
-echo   start     Build and start container (default)
-echo   stop      Stop container
-echo   restart   Restart container
-echo   shell     Open bash shell in container
-echo   logs      Show container logs
-echo   rebuild   Rebuild image (no cache)
+echo   start         Build and start container (default)
+echo   stop          Stop container
+echo   restart       Restart container
+echo   shell         Open bash shell in container
+echo   logs          Show container logs
+echo   rebuild       Rebuild image (no cache)
 echo   clean-rebuild Remove container and rebuild (no cache)
-echo   help      Show this help
+echo   help          Show this help
+echo.
+echo Options:
+echo   --redis-port PORT    Host port for Redis   (default: 6379)
+echo   --jupyter-port PORT  Host port for Jupyter (default: 8888)
+echo.
+echo Examples:
+echo   run.bat
+echo   run.bat start --redis-port 7379 --jupyter-port 9888
 echo.
 exit /b 0
 
@@ -44,10 +65,8 @@ docker --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Docker not found!
     echo Install Docker Desktop: https://www.docker.com/products/docker-desktop
-    pause
     exit /b 1
 )
-
 echo [1/4] Checking Docker... OK
 echo.
 
@@ -56,7 +75,6 @@ echo [2/4] Building image %IMAGE_NAME%...
 docker build -t %IMAGE_NAME% .
 if errorlevel 1 (
     echo [ERROR] Build failed!
-    pause
     exit /b 1
 )
 echo Build completed!
@@ -70,10 +88,12 @@ echo.
 
 REM Start container
 echo [4/4] Starting container %CONTAINER_NAME%...
+echo       Redis port:   %REDIS_PORT%
+echo       Jupyter port: %JUPYTER_PORT%
 docker run -d ^
     --name %CONTAINER_NAME% ^
-    -p 6379:6379 ^
-    -p 8888:8888 ^
+    -p %REDIS_PORT%:6379 ^
+    -p %JUPYTER_PORT%:8888 ^
     -v "%cd%\logs:/app/logs" ^
     -v "%cd%\workers:/app/workers" ^
     -v "%cd%\results:/app/results" ^
@@ -81,8 +101,10 @@ docker run -d ^
     %IMAGE_NAME%
 
 if errorlevel 1 (
-    echo [ERROR] Failed to start container!
-    pause
+    echo.
+    echo [ERROR] Failed to start container.
+    echo         If the error is "port is already allocated", use different ports:
+    echo         run.bat start --redis-port 7379 --jupyter-port 9888
     exit /b 1
 )
 
@@ -92,15 +114,14 @@ echo   Container started successfully!
 echo ==========================================
 echo.
 echo Container: %CONTAINER_NAME%
-echo Redis:     http://localhost:6379
-echo Jupyter:   http://localhost:8888
+echo Redis:     localhost:%REDIS_PORT%
+echo Jupyter:   http://localhost:%JUPYTER_PORT%
 echo.
 echo Commands:
 echo   run.bat stop      Stop container
 echo   run.bat shell     Open shell
 echo   run.bat logs      View logs
 echo.
-pause
 exit /b 0
 
 :stop
@@ -138,7 +159,6 @@ echo.
 docker build --no-cache -t %IMAGE_NAME% .
 if errorlevel 1 (
     echo [ERROR] Build failed!
-    pause
     exit /b 1
 )
 echo Build completed!
@@ -154,4 +174,3 @@ echo Removing container...
 docker stop %CONTAINER_NAME% >nul 2>&1
 docker rm %CONTAINER_NAME% >nul 2>&1
 goto rebuild
-

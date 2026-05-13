@@ -1669,7 +1669,7 @@ def _render_worker_chart_grid(series_data, *, title: str, ylabel: str):
 
 
 def _plot_queue_chart(report, df: pd.DataFrame):
-    workers_data = (report or {}).get('../workers') or {}
+    workers_data = (report or {}).get('workers') or {}
     cache = globals().get('DB10_WORKER_CACHE') or {}
     worker_stats = cache.get('worker_stats') or {}
     if not workers_data and not worker_stats:
@@ -1721,7 +1721,7 @@ def _plot_queue_chart(report, df: pd.DataFrame):
 def _collect_worker_iteration_rows(report, df: pd.DataFrame):
     cache = globals().get('DB10_WORKER_CACHE') or {}
     worker_stats = cache.get('worker_stats') or {}
-    workers = (report or {}).get('../workers') or {}
+    workers = (report or {}).get('workers') or {}
     union_worker_ids = set(workers.keys()) | set(worker_stats.keys())
     label_map = _build_worker_label_map(union_worker_ids)
     rows = []
