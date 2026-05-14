@@ -354,6 +354,42 @@ baseline/resources/datasets/<dataset_name>/
     <dataset_name>.samples  # test samples (features only, one row per sample)
 ```
 
+#### CSV format
+
+- **Separator:** comma (`,`)
+- **First row:** header with feature names; the **last column** must be the class label
+- **All other rows:** one sample per row, all values numeric (or string class labels in the last column)
+- **No index column**
+
+Example (`iris_custom.csv`):
+
+```
+sepal_length,sepal_width,petal_length,petal_width,class
+5.1,3.5,1.4,0.2,0
+4.9,3.0,1.4,0.2,0
+6.3,3.3,6.0,2.5,2
+5.8,2.7,5.1,1.9,2
+```
+
+String class labels are accepted (e.g. `"Setosa"`, `"R"`) — they are automatically encoded internally. Numeric class labels (e.g. `0`, `1`, `2`) are used as-is and must be passed verbatim to `--class-label`.
+
+#### Samples format (`.samples`)
+
+- **No header row**
+- **Separator:** comma (`,`)
+- **Each row:** feature values only (same order and count as the CSV feature columns, **without** the class column)
+- These are the test samples MCR will compute reasons for
+
+Example (`iris_custom.samples`):
+
+```
+5.1,3.5,1.4,0.2
+4.9,3.0,1.4,0.2
+6.3,3.3,6.0,2.5
+```
+
+If the `.samples` file includes a label as the last column, MCR will detect and drop it automatically.
+
 **Initialize Redis:**
 
 ```bash
