@@ -13,7 +13,7 @@ redis:
 # Worker configuration - single default setup
 workers:
   default_worker:
-    count: 4                        # Number of worker instances to start
+    count: 6                        # Number of worker instances to start
     script: worker_cache_logged.py  # Worker script to run
     args: []                        # Additional arguments (empty by default)
 

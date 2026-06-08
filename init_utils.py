@@ -114,6 +114,7 @@ def process_all_classified_samples(
     eu_data,
     sample_percentage=None,
     dataset_type='generic',
+    subject_ids=None,
 ):
     """
     Process all test samples that are classified with the specified class label.
@@ -189,7 +190,8 @@ def process_all_classified_samples(
             'dataset_name': dataset_name,
             'dataset_type': dataset_type,
             'timestamp': current_time,
-            'prediction_correct': sample_data['prediction_correct']
+            'prediction_correct': sample_data['prediction_correct'],
+            'subject_id': subject_ids[sample_data['test_index']] if subject_ids is not None else None,
         }
         
         # Store sample using our helper function

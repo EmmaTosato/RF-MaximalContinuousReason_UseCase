@@ -61,13 +61,16 @@ DATASETS = ['spraydryer','ann-thyroid', 'appendicitis', 'banknote', 'biodegradat
 
 
 
-def load_dataset_from_baseline(dataset_name, separator=','):
+def load_dataset_from_baseline(dataset_name, separator=',', train_idx=None):
     """
     Load dataset CSV and samples from baseline directory structure.
 
     Args:
         dataset_name: Name of the dataset
         separator: CSV separator (default: ',')
+        train_idx: Optional list of row indices into the CSV to use as training set.
+            If provided, builds X_train from those rows instead of a random split.
+            Use this when the fold split is known (e.g. from _meta.json).
 
     Returns:
         (X_train, X_test, y_train, y_test, feature_names, all_classes)
@@ -97,12 +100,18 @@ def load_dataset_from_baseline(dataset_name, separator=','):
     print(f"[INFO] Loading dataset from: {dataset_path}")
     data = Dataset(filename=dataset_path, separator=separator, use_categorical=False)
 
-    # Get train/test split from the Dataset
-    X_train_raw, X_test_raw, y_train, y_test = data.train_test_split()
-
-    # Transform data (apply any transformations the Dataset class has)
-    X_train = data.transform(X_train_raw)
-    X_test = data.transform(X_test_raw)
+    if train_idx is not None:
+        # Use the exact fold split from _meta.json — avoids sigma contamination
+        csv_df = pd.read_csv(dataset_path, sep=separator)
+        feature_cols = data.features
+        X_train_raw = csv_df.iloc[train_idx][feature_cols].values
+        y_train = csv_df.iloc[train_idx]['label'].values
+        X_train = data.transform(X_train_raw)
+        print(f"[INFO] Using fold train_idx: {len(train_idx)} training samples")
+    else:
+        # Fallback: random 80/20 split (UCI/classic baseline datasets)
+        X_train_raw, _, y_train, _ = data.train_test_split()
+        X_train = data.transform(X_train_raw)
 
     # Load samples - these will be our actual test samples
     print(f"[INFO] Loading samples from: {samples_path}")
@@ -124,10 +133,6 @@ def load_dataset_from_baseline(dataset_name, separator=','):
     print(f"[INFO] Training set: {len(X_train)} samples")
     print(f"[INFO] Features: {data.features}")
     print(f"[INFO] Classes: {np.unique(y_train)}")
-
-    # Convert class labels to strings for consistency (ensure int format '0' not '0.0')
-    #y_train = y_train.astype(int).astype(str)
-    #y_test = y_test.astype(int).astype(str)
 
     return X_train, samples, y_train, None, data.features, np.unique(y_train), data
 
@@ -318,10 +323,32 @@ Examples:
         
         clean_all_databases(connections, db_mapping)
         
-        # 2. Load Dataset
+        # 2. Load meta file if present (provides fold splits, subject_id, actual_label)
+        meta_path = Path(DATASETS_ROOT) / args.dataset_name / f"{args.dataset_name}_meta.json"
+        fold_meta = None
+        if meta_path.exists():
+            with open(meta_path) as f:
+                fold_meta = json.load(f)
+            print(f"[INFO] Loaded fold meta: {meta_path}")
+        else:
+            print(f"[WARNING] No meta file found at {meta_path}; falling back to random split")
+
+        train_idx = fold_meta["train_idx"] if fold_meta is not None else None
+
+        # 3. Load Dataset
         X_train, X_test_samples, y_train, _, feature_names, all_classes, data = load_dataset_from_baseline(
-            args.dataset_name
+            args.dataset_name, train_idx=train_idx
         )
+
+        # Build y_test and subject_ids from meta (parallel to X_test_samples rows)
+        if fold_meta is not None:
+            samples_meta = fold_meta["samples"]
+            y_test = np.array([samples_meta[str(i)]["actual_label"] for i in range(len(X_test_samples))])
+            subject_ids = [samples_meta[str(i)]["subject_id"] for i in range(len(X_test_samples))]
+            print(f"[INFO] y_test and subject_ids loaded from meta: {len(subject_ids)} subjects")
+        else:
+            y_test = None
+            subject_ids = None
                 
         print(f"[INFO] Dataset: {args.dataset_name}")
         print(f"[INFO] Features: {len(feature_names)}")
@@ -361,21 +388,23 @@ Examples:
         # 5. Process Test Samples
         print("\n[INFO] Processing test samples...")
 
-        X_test = [dict(zip(feature_names,  x_test) ) for x_test in X_test_samples]
+        if fold_meta is None:
+            raise FileNotFoundError(
+                f"Meta file not found: {meta_path}. "
+                f"Run export_to_drifts.py to generate it."
+            )
 
-        predictions = [our_forest.predict(x_test) for x_test in X_test ]
-        
-
-
-        label_samples = [sample for sample, pred in  zip(X_test, predictions) if pred == args.class_label  ]
-
-        stored_samples, summary = process_all_classified_samples_baseline(
+        stored_samples, summary = process_all_classified_samples(
             connections,
             args.dataset_name,
             args.class_label,
             our_forest,
-            label_samples,
+            X_test_samples,
+            y_test,
+            feature_names,
             eu_data,
+            subject_ids=subject_ids,
+            dataset_type='dsd',
         )
         
 
